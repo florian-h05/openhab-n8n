@@ -56,10 +56,6 @@
   "peerDependencies": {
     "n8n-workflow": "*"
   },
-  "overrides": {
-    "@aws-sdk/*": "3.973.7",
-    "fast-xml-parser": "5.3.4"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/openhab/openhab-n8n.git"
