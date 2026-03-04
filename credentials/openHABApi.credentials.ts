@@ -1,9 +1,30 @@
-import type { ICredentialTestRequest, ICredentialType, INodeProperties } from 'n8n-workflow';
+import type {
+	IAuthenticateGeneric,
+	ICredentialTestRequest,
+	ICredentialType,
+	INodeProperties,
+} from 'n8n-workflow';
 
 export class openHABApi implements ICredentialType {
 	name = 'openHABApi';
 	displayName = 'openHAB / myopenHAB API';
 	documentationUrl = 'https://www.openhab.org/docs/configuration/rest.html';
+	authenticate: IAuthenticateGeneric = {
+		type: 'generic',
+		properties: {
+			auth: '={{$credentials.authType === "cloud" ? { "username": $credentials.username, "password": $credentials.password, "sendImmediately": true } : undefined}}' as unknown as {
+				username: string;
+				password: string;
+				sendImmediately?: boolean;
+			},
+			headers: {
+				Authorization:
+					'={{$credentials.authType === "token" ? "Bearer " + $credentials.token : undefined}}',
+				'X-OPENHAB-TOKEN':
+					'={{$credentials.authType === "cloud" ? ($credentials.cloudToken || undefined) : $credentials.token}}',
+			},
+		},
+	};
 	test: ICredentialTestRequest = {
 		request: {
 			method: 'GET',

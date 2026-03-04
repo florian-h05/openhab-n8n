@@ -17,67 +17,6 @@ interface ApiRequestOptions {
 	plainText?: boolean;
 	fullResponse?: boolean;
 	extraHeaders?: IDataObject;
-	debug?: boolean;
-}
-
-const SENSITIVE_DEBUG_HEADERS = new Set([
-	'authorization',
-	'x-openhab-token',
-	'cookie',
-	'set-cookie',
-	'proxy-authorization',
-]);
-
-function sanitizeHeadersForDebug(headers: IDataObject): IDataObject {
-	const sanitized: IDataObject = {};
-	for (const [key, value] of Object.entries(headers)) {
-		const normalizedKey = key.toLowerCase();
-		sanitized[key] = SENSITIVE_DEBUG_HEADERS.has(normalizedKey) ? '[REDACTED]' : value;
-	}
-	return sanitized;
-}
-
-function formatDebugBody(value: unknown): string {
-	if (typeof value === 'string') {
-		return value.length > 300 ? `${value.slice(0, 300)}...` : value;
-	}
-
-	if (value && typeof value === 'object') {
-		try {
-			const json = JSON.stringify(value);
-			return json.length > 300 ? `${json.slice(0, 300)}...` : json;
-		} catch {
-			return '[Unserializable Object]';
-		}
-	}
-
-	return String(value);
-}
-
-function logDebug(
-	context: IExecuteFunctions,
-	enabled: boolean,
-	phase: string,
-	payload: IDataObject,
-): void {
-	if (!enabled) {
-		return;
-	}
-
-	const logger = (context as IExecuteFunctions & { logger?: { debug?: (message: string) => void } })
-		.logger;
-	if (!logger?.debug) {
-		return;
-	}
-
-	const details = (() => {
-		try {
-			return ` ${JSON.stringify(payload)}`;
-		} catch {
-			return '';
-		}
-	})();
-	logger.debug(`[openHAB debug] ${phase}${details}`);
 }
 
 async function openhabApiRequest(
@@ -113,8 +52,6 @@ async function openhabApiRequest(
 
 	const normalizedMethod = method.toUpperCase();
 	const isReadOperation = ['GET', 'HEAD'].includes(normalizedMethod);
-	const debugEnabled = Boolean(options.debug);
-
 	const headers: IDataObject = {
 		Accept: options.plainText ? 'text/plain' : 'application/json',
 		...(options.extraHeaders ?? {}),
@@ -129,17 +66,11 @@ async function openhabApiRequest(
 				'Username and password are required for myopenHAB Account.',
 			);
 		}
-		const cloudToken = ((credentials.cloudToken as string | undefined) ?? '').trim();
-		if (cloudToken) {
-			headers['X-OPENHAB-TOKEN'] = cloudToken;
-		}
 	} else {
 		const token = credentials.token as string;
 		if (!token) {
 			throw new NodeOperationError(this.getNode(), 'API token is required.');
 		}
-		headers.Authorization = `Bearer ${token}`;
-		headers['X-OPENHAB-TOKEN'] = token;
 	}
 
 	if (!isReadOperation) {
@@ -173,36 +104,14 @@ async function openhabApiRequest(
 		requestOptions.body = body;
 	}
 
-	if (authType === 'cloud') {
-		requestOptions.auth = {
-			username: credentials.username as string,
-			password: credentials.password as string,
-		};
-	}
-
-	const requestDebug: IDataObject = {
-		method: normalizedMethod,
-		url: requestOptions.url,
-		query: qs,
-		headers: sanitizeHeadersForDebug(headers),
-		authType,
-		useCloud,
-		expectFullResponse: true,
-	};
-	if (!isReadOperation) {
-		requestDebug.body = formatDebugBody(body);
-	}
-	logDebug(this, debugEnabled, 'request', requestDebug);
-
 	let response: IDataObject;
 	try {
-		response = (await this.helpers.httpRequest(requestOptions)) as IDataObject;
+		response = (await this.helpers.httpRequestWithAuthentication.call(
+			this,
+			'openHABApi',
+			requestOptions,
+		)) as IDataObject;
 	} catch (error) {
-		logDebug(this, debugEnabled, 'transportError', {
-			method: normalizedMethod,
-			url: requestOptions.url,
-			error: (error as Error).message,
-		});
 		throw error;
 	}
 
@@ -211,35 +120,20 @@ async function openhabApiRequest(
 	const statusMessage = (fullResponse.statusMessage as string | undefined) ?? '';
 
 	if (typeof statusCode !== 'number') {
-		logDebug(this, debugEnabled, 'responseError', {
-			method: normalizedMethod,
-			url: requestOptions.url,
-			error: 'openHAB request failed: missing HTTP status code in response.',
-		});
 		throw new NodeOperationError(
 			this.getNode(),
 			'openHAB request failed: missing HTTP status code in response.',
 		);
 	}
 
-	logDebug(this, debugEnabled, 'response', {
-		method: normalizedMethod,
-		url: requestOptions.url,
-		statusCode,
-		statusMessage,
-	});
-
 	if (statusCode < 200 || statusCode >= 300) {
 		const body = fullResponse.body;
-		const bodyMessage = body === undefined || body === null ? '' : formatDebugBody(body).trim();
-
-		logDebug(this, debugEnabled, 'responseError', {
-			method: normalizedMethod,
-			url: requestOptions.url,
-			statusCode,
-			statusMessage,
-			body: formatDebugBody(body),
-		});
+		const bodyMessage =
+			body === undefined || body === null
+				? ''
+				: typeof body === 'string'
+				? body.trim()
+				: JSON.stringify(body);
 
 		const cloudAuthHint =
 			useCloud && statusCode === 401
@@ -542,14 +436,6 @@ export class openHAB implements INodeType {
 				],
 				default: 'info',
 			},
-			{
-				displayName: 'Enable Debug Logging',
-				name: 'debugLogging',
-				type: 'boolean',
-				default: false,
-				description:
-					'Logs request/response metadata (method, URL, query, redacted headers, status) to the n8n server logs.',
-			},
 		] as INodeProperties[],
 	};
 
@@ -560,19 +446,6 @@ export class openHAB implements INodeType {
 		for (let i = 0; i < items.length; i++) {
 			try {
 				const resource = this.getNodeParameter('resource', i) as string;
-				const debugLogging = this.getNodeParameter('debugLogging', i, false) as boolean;
-				const openhabApiRequestWithDebug = (
-					context: IExecuteFunctions,
-					method: string,
-					path: string,
-					body: IDataObject | string = {},
-					qs: IDataObject = {},
-					options: ApiRequestOptions = {},
-				) =>
-					openhabApiRequest.call(context, method, path, body, qs, {
-						...options,
-						debug: debugLogging,
-					});
 				const operation =
 					resource === 'item'
 						? (this.getNodeParameter('itemOperation', i) as string)
@@ -591,9 +464,7 @@ export class openHAB implements INodeType {
 						if (tagFilter) {
 							qs.tags = tagFilter;
 						}
-						responseData = await openhabApiRequestWithDebug(
-							this,
-							'GET',
+						responseData = await openhabApiRequest.call(this, 'GET',
 							'/items',
 							{},
 							qs,
@@ -602,17 +473,13 @@ export class openHAB implements INodeType {
 						const itemName = this.getNodeParameter('itemName', i) as string;
 
 						if (operation === 'get') {
-							responseData = await openhabApiRequestWithDebug(
-								this,
-								'GET',
+							responseData = await openhabApiRequest.call(this, 'GET',
 								`/items/${encodeURIComponent(itemName)}`,
 								{},
 								{},
 							);
 						} else if (operation === 'state') {
-							const state = await openhabApiRequestWithDebug(
-								this,
-								'GET',
+							const state = await openhabApiRequest.call(this, 'GET',
 								`/items/${encodeURIComponent(itemName)}/state`,
 								{},
 								{},
@@ -621,9 +488,7 @@ export class openHAB implements INodeType {
 							responseData = { item: itemName, state };
 						} else if (operation === 'command') {
 							const command = this.getNodeParameter('command', i) as string;
-							const res = (await openhabApiRequestWithDebug(
-								this,
-								'POST',
+							const res = (await openhabApiRequest.call(this, 'POST',
 								`/items/${encodeURIComponent(itemName)}`,
 								command,
 								{},
@@ -636,9 +501,7 @@ export class openHAB implements INodeType {
 							};
 						} else if (operation === 'updateState') {
 							const command = this.getNodeParameter('command', i) as string;
-							const res = (await openhabApiRequestWithDebug(
-								this,
-								'PUT',
+							const res = (await openhabApiRequest.call(this, 'PUT',
 								`/items/${encodeURIComponent(itemName)}/state`,
 								command,
 								{},
@@ -650,9 +513,7 @@ export class openHAB implements INodeType {
 								statusCode: res.statusCode,
 							};
 						} else if (operation === 'metadata') {
-							const itemData = (await openhabApiRequestWithDebug(
-								this,
-								'GET',
+							const itemData = (await openhabApiRequest.call(this, 'GET',
 								`/items/${encodeURIComponent(itemName)}`,
 								{},
 								{ metadata: '.*' },
@@ -665,9 +526,7 @@ export class openHAB implements INodeType {
 					}
 				} else if (resource === 'thing') {
 					if (operation === 'list') {
-						responseData = await openhabApiRequestWithDebug(
-							this,
-							'GET',
+						responseData = await openhabApiRequest.call(this, 'GET',
 							'/things',
 							{},
 							{},
@@ -675,17 +534,13 @@ export class openHAB implements INodeType {
 					} else {
 						const thingUid = this.getNodeParameter('thingUid', i) as string;
 						if (operation === 'get') {
-							responseData = await openhabApiRequestWithDebug(
-								this,
-								'GET',
+							responseData = await openhabApiRequest.call(this, 'GET',
 								`/things/${encodeURIComponent(thingUid)}`,
 								{},
 								{},
 							);
 						} else if (operation === 'status') {
-							responseData = await openhabApiRequestWithDebug(
-								this,
-								'GET',
+							responseData = await openhabApiRequest.call(this, 'GET',
 								`/things/${encodeURIComponent(thingUid)}/status`,
 								{},
 								{},
@@ -694,9 +549,7 @@ export class openHAB implements INodeType {
 					}
 				} else if (resource === 'rule') {
 					if (operation === 'list') {
-						responseData = await openhabApiRequestWithDebug(
-							this,
-							'GET',
+						responseData = await openhabApiRequest.call(this, 'GET',
 							'/rules',
 							{},
 							{},
@@ -704,9 +557,7 @@ export class openHAB implements INodeType {
 					} else {
 						const ruleUid = this.getNodeParameter('ruleUid', i) as string;
 						if (operation === 'run') {
-							const res = (await openhabApiRequestWithDebug(
-								this,
-								'POST',
+							const res = (await openhabApiRequest.call(this, 'POST',
 								`/rules/${encodeURIComponent(ruleUid)}/runnow`,
 								{},
 								{},
@@ -718,9 +569,7 @@ export class openHAB implements INodeType {
 							};
 						} else if (operation === 'toggle') {
 							const enable = this.getNodeParameter('ruleEnable', i) as boolean;
-							const res = (await openhabApiRequestWithDebug(
-								this,
-								'POST',
+							const res = (await openhabApiRequest.call(this, 'POST',
 								`/rules/${encodeURIComponent(ruleUid)}/enable`,
 								enable.toString(),
 								{},
@@ -734,9 +583,7 @@ export class openHAB implements INodeType {
 						}
 					}
 				} else if (resource === 'system') {
-					responseData = await openhabApiRequestWithDebug(
-						this,
-						'GET',
+					responseData = await openhabApiRequest.call(this, 'GET',
 						'/systeminfo',
 						{},
 						{},
