@@ -12,6 +12,17 @@ import {
 import WebSocket, { type RawData } from 'ws';
 
 type AuthType = 'token' | 'cloud';
+const HEARTBEAT_INTERVAL_MS = 5000;
+type ParsedEventPayload =
+	| IDataObject
+	| string
+	| number
+	| boolean
+	| IDataObject[]
+	| string[]
+	| number[]
+	| boolean[]
+	| null;
 
 function parseFilterList(value: string): string[] {
 	return value
@@ -24,6 +35,7 @@ async function buildWebSocketConfig(
 	this: ITriggerFunctions,
 ): Promise<{
 	wsUrl: string;
+	accessTokenSubProtocol: string;
 	allowUnauthorizedCerts: boolean;
 	sourceName: string;
 }> {
@@ -93,10 +105,10 @@ async function buildWebSocketConfig(
 	parsedUrl.protocol = parsedUrl.protocol === 'https:' ? 'wss:' : 'ws:';
 	parsedUrl.pathname = '/ws/events';
 	parsedUrl.search = '';
-	parsedUrl.searchParams.set('accessToken', accessToken);
 
 	return {
 		wsUrl: parsedUrl.toString(),
+		accessTokenSubProtocol: Buffer.from(accessToken).toString('base64').replace(/=+$/, ''),
 		allowUnauthorizedCerts,
 		sourceName: `n8n:${this.getWorkflow().id}:${this.getNode().name}`,
 	};
@@ -109,7 +121,7 @@ export class openHABTrigger implements INodeType {
 		icon: 'file:openhab.svg',
 		group: ['trigger'],
 		version: 1,
-		description: "Listen to openHAB's event WebSocket stream.",
+		description: 'Listen to the openHAB event WebSocket stream.',
 		defaults: {
 			name: 'openHAB Trigger',
 		},
@@ -146,14 +158,22 @@ export class openHABTrigger implements INodeType {
 	async trigger(this: ITriggerFunctions): Promise<ITriggerResponse> {
 		const topicFilters = parseFilterList(this.getNodeParameter('topicFilters') as string);
 		const typeFilters = parseFilterList(this.getNodeParameter('typeFilters') as string);
-		const { wsUrl, allowUnauthorizedCerts, sourceName } = await buildWebSocketConfig.call(this);
+		const { wsUrl, accessTokenSubProtocol, allowUnauthorizedCerts, sourceName } =
+			await buildWebSocketConfig.call(this);
 
 		let isClosing = false;
 		let heartbeatTimer: NodeJS.Timeout | undefined;
 
-		const ws = new WebSocket(wsUrl, {
-			rejectUnauthorized: !allowUnauthorizedCerts,
-		});
+		const ws = new WebSocket(
+			wsUrl,
+			[
+				'org.openhab.ws.protocol.default',
+				`org.openhab.ws.accessToken.base64.${accessTokenSubProtocol}`,
+			],
+			{
+				rejectUnauthorized: !allowUnauthorizedCerts,
+			},
+		);
 
 		const sendEvent = (topic: string, payload: unknown) => {
 			if (ws.readyState !== WebSocket.OPEN) {
@@ -188,7 +208,7 @@ export class openHABTrigger implements INodeType {
 						source: sourceName,
 					}),
 				);
-			}, 5000);
+			}, HEARTBEAT_INTERVAL_MS);
 		});
 
 		ws.on('message', (messageData: RawData) => {
@@ -217,37 +237,10 @@ export class openHABTrigger implements INodeType {
 			}
 
 			const payloadRaw = eventData.payload;
-			let payloadParsed:
-				| IDataObject
-				| string
-				| number
-				| boolean
-				| IDataObject[]
-				| string[]
-				| number[]
-				| boolean[]
-				| null = payloadRaw as
-				| IDataObject
-				| string
-				| number
-				| boolean
-				| IDataObject[]
-				| string[]
-				| number[]
-				| boolean[]
-				| null;
+			let payloadParsed = payloadRaw as ParsedEventPayload;
 			if (typeof payloadRaw === 'string') {
 				try {
-					payloadParsed = JSON.parse(payloadRaw) as
-						| IDataObject
-						| string
-						| number
-						| boolean
-						| IDataObject[]
-						| string[]
-						| number[]
-						| boolean[]
-						| null;
+					payloadParsed = JSON.parse(payloadRaw) as ParsedEventPayload;
 				} catch {
 					// Keep original string payload.
 				}
