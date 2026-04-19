@@ -62,5 +62,8 @@
   },
   "bugs": {
     "url": "https://github.com/openhab/openhab-n8n/issues"
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
   }
 }
