@@ -14,6 +14,7 @@ Custom n8n node for interacting with the openHAB REST API, with optional myopenH
 - Inspect things and their status.
 - List, trigger, enable/disable rules.
 - Fetch system info for quick health checks.
+- Trigger workflows from openHAB Event WebSocket messages.
 - Works against local openHAB or remotely through `myopenhab.org`.
 
 ## Requirements
@@ -47,11 +48,24 @@ Custom n8n node for interacting with the openHAB REST API, with optional myopenH
    - **Local**: Base URL (e.g., `http://localhost:8080`) + API token.
    - **Cloud (myopenHAB)**: Choose “myopenHAB Account” in credentials and enter your myopenHAB login. If needed, set optional **openHAB API Token (optional)** to send `X-OPENHAB-TOKEN`.
 3. Choose a resource:
-   - **Item**: list/get/state/command/update/metadata.
-   - **Thing**: list/get/status.
-   - **Rule**: list/run/enable/disable.
-   - **System**: system info.
+    - **Item**: list/get/state/command/update/metadata.
+    - **Thing**: list/get/status.
+    - **Rule**: list/run/enable/disable.
+    - **System**: system info.
 4. Execute the node; outputs are JSON objects ready for downstream n8n steps.
+
+### openHAB Trigger node
+
+Use **openHAB Trigger** to listen to `/ws/events` and start workflows when openHAB events arrive.
+
+- **Topic Filters**: Comma-separated topic filters (supports `*` and exclusions with `!`), e.g. `openhab/items/*/statechanged,!openhab/items/MyItem/*`.
+- **Type Filters**: Comma-separated event types, e.g. `ItemStateEvent,ItemStateChangedEvent`.
+
+The trigger emits incoming events with:
+- original event fields (`type`, `topic`, `payload`, `source` if present)
+- `payloadRaw` (raw payload string/value)
+- `payloadParsed` (parsed JSON payload when possible)
+- `receivedAt` (ISO timestamp)
 
 ### Usage examples
 
