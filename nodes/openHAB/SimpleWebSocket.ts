@@ -116,8 +116,8 @@ export class SimpleWebSocket extends EventEmitter {
 			req.on('upgrade', (res: http.IncomingMessage, socket: stream.Duplex) => {
 				// Validate the handshake response
 				if (res.statusCode !== 101) {
-					socket.destroy(new Error(`WebSocket upgrade rejected: HTTP ${res.statusCode}`));
 					const err = new Error(`WebSocket upgrade rejected: HTTP ${res.statusCode}`);
+					socket.destroy(err);
 					this.readyState = SimpleWebSocket.CLOSED;
 					this.emit('error', err);
 					reject(err);
@@ -126,8 +126,8 @@ export class SimpleWebSocket extends EventEmitter {
 
 				const acceptHeader = res.headers['sec-websocket-accept'];
 				if (acceptHeader !== expectedAccept) {
-					socket.destroy(new Error('Invalid Sec-WebSocket-Accept header'));
 					const err = new Error('Invalid Sec-WebSocket-Accept header');
+					socket.destroy(err);
 					this.readyState = SimpleWebSocket.CLOSED;
 					this.emit('error', err);
 					reject(err);
