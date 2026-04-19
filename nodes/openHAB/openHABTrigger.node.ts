@@ -10,6 +10,7 @@ import {
 	type ITriggerResponse,
 } from 'n8n-workflow';
 import type { CloseEvent, ErrorEvent } from 'undici-types';
+import { SimpleWebSocket } from './SimpleWebSocket';
 
 type AuthType = 'token' | 'cloud';
 const HEARTBEAT_INTERVAL_MS = 5000;
@@ -36,7 +37,8 @@ async function buildWebSocketConfig(
 ): Promise<{
 	wsUrl: string;
 	accessTokenSubProtocol: string;
-	allowUnauthorizedCerts: boolean;
+	rejectUnauthorized: boolean;
+	extraHeaders: Record<string, string>;
 	sourceName: string;
 }> {
 	const credentials = (await this.getCredentials(
@@ -67,19 +69,25 @@ async function buildWebSocketConfig(
 	}
 
 	let accessToken = '';
+	const extraHeaders: Record<string, string> = {};
+
 	if (useCloud) {
 		const cloudToken = ((credentials.cloudToken as string | undefined) ?? '').trim();
+		const username = (credentials.username as string | undefined) ?? '';
+		const password = (credentials.password as string | undefined) ?? '';
+		if (!username || !password) {
+			throw new NodeOperationError(
+				this.getNode(),
+				'Username and password are required for myopenHAB Account.',
+			);
+		}
+		// HTTP Basic Auth for the WebSocket upgrade request — same credentials used for REST calls.
+		extraHeaders['Authorization'] =
+			`Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
 		if (cloudToken) {
+			extraHeaders['X-OPENHAB-TOKEN'] = cloudToken;
 			accessToken = cloudToken;
 		} else {
-			const username = (credentials.username as string | undefined) ?? '';
-			const password = (credentials.password as string | undefined) ?? '';
-			if (!username || !password) {
-				throw new NodeOperationError(
-					this.getNode(),
-					'Username and password are required for myopenHAB Account.',
-				);
-			}
 			accessToken = Buffer.from(`${username}:${password}`).toString('base64');
 		}
 	} else {
@@ -90,7 +98,7 @@ async function buildWebSocketConfig(
 		accessToken = token;
 	}
 
-	const allowUnauthorizedCerts = Boolean(credentials.allowUnauthorizedCerts) && !useCloud;
+	const rejectUnauthorized = useCloud || !credentials.allowUnauthorizedCerts;
 
 	let parsedUrl: URL;
 	try {
@@ -109,7 +117,8 @@ async function buildWebSocketConfig(
 	return {
 		wsUrl: parsedUrl.toString(),
 		accessTokenSubProtocol: Buffer.from(accessToken).toString('base64').replace(/=+$/, ''),
-		allowUnauthorizedCerts,
+		rejectUnauthorized,
+		extraHeaders,
 		sourceName: `n8n:${this.getWorkflow().id}:${this.getNode().name}`,
 	};
 }
@@ -158,29 +167,23 @@ export class openHABTrigger implements INodeType {
 	async trigger(this: ITriggerFunctions): Promise<ITriggerResponse> {
 		const topicFilters = parseFilterList(this.getNodeParameter('topicFilters') as string);
 		const typeFilters = parseFilterList(this.getNodeParameter('typeFilters') as string);
-		const { wsUrl, accessTokenSubProtocol, allowUnauthorizedCerts, sourceName } =
+		const { wsUrl, accessTokenSubProtocol, rejectUnauthorized, extraHeaders, sourceName } =
 			await buildWebSocketConfig.call(this);
 
 		let isClosing = false;
 		let heartbeatTimer: NodeJS.Timeout | undefined;
 
-		if (allowUnauthorizedCerts) {
-			throw new NodeOperationError(
-				this.getNode(),
-				'Self-signed certificate support is not available with the built-in WebSocket client. Use HTTP instead of HTTPS for local openHAB connections, or install a trusted certificate.',
-			);
-		}
-
-		const ws = new WebSocket(
+		const ws = new SimpleWebSocket(
 			wsUrl,
 			[
 				'org.openhab.ws.protocol.default',
 				`org.openhab.ws.accessToken.base64.${accessTokenSubProtocol}`,
 			],
+			{ rejectUnauthorized, extraHeaders },
 		);
 
 		const sendEvent = (topic: string, payload: unknown) => {
-			if (ws.readyState !== WebSocket.OPEN) {
+			if (ws.readyState !== SimpleWebSocket.OPEN) {
 				return;
 			}
 			ws.send(
@@ -201,7 +204,7 @@ export class openHABTrigger implements INodeType {
 				sendEvent('openhab/websocket/filter/type', typeFilters);
 			}
 			heartbeatTimer = setInterval(() => {
-				if (ws.readyState !== WebSocket.OPEN) {
+				if (ws.readyState !== SimpleWebSocket.OPEN) {
 					return;
 				}
 				ws.send(
@@ -283,7 +286,7 @@ export class openHABTrigger implements INodeType {
 					clearInterval(heartbeatTimer);
 					heartbeatTimer = undefined;
 				}
-				if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+				if (ws.readyState === SimpleWebSocket.OPEN || ws.readyState === SimpleWebSocket.CONNECTING) {
 					ws.close();
 				}
 			},
