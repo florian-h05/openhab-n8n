@@ -9,7 +9,7 @@ import {
 	type ITriggerFunctions,
 	type ITriggerResponse,
 } from 'n8n-workflow';
-import WebSocket, { type RawData } from 'ws';
+import { SimpleWebSocket } from './SimpleWebSocket';
 
 type AuthType = 'token' | 'cloud';
 const HEARTBEAT_INTERVAL_MS = 5000;
@@ -164,7 +164,7 @@ export class openHABTrigger implements INodeType {
 		let isClosing = false;
 		let heartbeatTimer: NodeJS.Timeout | undefined;
 
-		const ws = new WebSocket(
+		const ws = new SimpleWebSocket(
 			wsUrl,
 			[
 				'org.openhab.ws.protocol.default',
@@ -176,7 +176,7 @@ export class openHABTrigger implements INodeType {
 		);
 
 		const sendEvent = (topic: string, payload: unknown) => {
-			if (ws.readyState !== WebSocket.OPEN) {
+			if (ws.readyState !== SimpleWebSocket.OPEN) {
 				return;
 			}
 			ws.send(
@@ -197,7 +197,7 @@ export class openHABTrigger implements INodeType {
 				sendEvent('openhab/websocket/filter/type', typeFilters);
 			}
 			heartbeatTimer = setInterval(() => {
-				if (ws.readyState !== WebSocket.OPEN) {
+				if (ws.readyState !== SimpleWebSocket.OPEN) {
 					return;
 				}
 				ws.send(
@@ -211,16 +211,12 @@ export class openHABTrigger implements INodeType {
 			}, HEARTBEAT_INTERVAL_MS);
 		});
 
-		ws.on('message', (messageData: RawData) => {
+		ws.on('message', (messageData: Buffer) => {
 			let messageText: string;
-			if (typeof messageData === 'string') {
-				messageText = messageData;
-			} else if (Buffer.isBuffer(messageData)) {
+			if (Buffer.isBuffer(messageData)) {
 				messageText = messageData.toString('utf8');
-			} else if (Array.isArray(messageData)) {
-				messageText = Buffer.concat(messageData).toString('utf8');
 			} else {
-				messageText = Buffer.from(messageData).toString('utf8');
+				messageText = String(messageData);
 			}
 
 			let eventData: IDataObject;
@@ -286,7 +282,7 @@ export class openHABTrigger implements INodeType {
 					clearInterval(heartbeatTimer);
 					heartbeatTimer = undefined;
 				}
-				if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+				if (ws.readyState === SimpleWebSocket.OPEN || ws.readyState === SimpleWebSocket.CONNECTING) {
 					ws.close();
 				}
 			},
