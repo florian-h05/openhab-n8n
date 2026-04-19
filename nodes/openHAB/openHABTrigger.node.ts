@@ -9,7 +9,7 @@ import {
 	type ITriggerFunctions,
 	type ITriggerResponse,
 } from 'n8n-workflow';
-import { SimpleWebSocket } from './SimpleWebSocket';
+import type { CloseEvent, ErrorEvent } from 'undici-types';
 
 type AuthType = 'token' | 'cloud';
 const HEARTBEAT_INTERVAL_MS = 5000;
@@ -164,19 +164,23 @@ export class openHABTrigger implements INodeType {
 		let isClosing = false;
 		let heartbeatTimer: NodeJS.Timeout | undefined;
 
-		const ws = new SimpleWebSocket(
+		if (allowUnauthorizedCerts) {
+			throw new NodeOperationError(
+				this.getNode(),
+				'Self-signed certificate support is not available with the built-in WebSocket client. Use HTTP instead of HTTPS for local openHAB connections, or install a trusted certificate.',
+			);
+		}
+
+		const ws = new WebSocket(
 			wsUrl,
 			[
 				'org.openhab.ws.protocol.default',
 				`org.openhab.ws.accessToken.base64.${accessTokenSubProtocol}`,
 			],
-			{
-				rejectUnauthorized: !allowUnauthorizedCerts,
-			},
 		);
 
 		const sendEvent = (topic: string, payload: unknown) => {
-			if (ws.readyState !== SimpleWebSocket.OPEN) {
+			if (ws.readyState !== WebSocket.OPEN) {
 				return;
 			}
 			ws.send(
@@ -189,7 +193,7 @@ export class openHABTrigger implements INodeType {
 			);
 		};
 
-		ws.on('open', () => {
+		ws.addEventListener('open', () => {
 			if (topicFilters.length > 0) {
 				sendEvent('openhab/websocket/filter/topic', topicFilters);
 			}
@@ -197,7 +201,7 @@ export class openHABTrigger implements INodeType {
 				sendEvent('openhab/websocket/filter/type', typeFilters);
 			}
 			heartbeatTimer = setInterval(() => {
-				if (ws.readyState !== SimpleWebSocket.OPEN) {
+				if (ws.readyState !== WebSocket.OPEN) {
 					return;
 				}
 				ws.send(
@@ -211,13 +215,8 @@ export class openHABTrigger implements INodeType {
 			}, HEARTBEAT_INTERVAL_MS);
 		});
 
-		ws.on('message', (messageData: Buffer) => {
-			let messageText: string;
-			if (Buffer.isBuffer(messageData)) {
-				messageText = messageData.toString('utf8');
-			} else {
-				messageText = String(messageData);
-			}
+		ws.addEventListener('message', (event: MessageEvent) => {
+			const messageText = event.data as string;
 
 			let eventData: IDataObject;
 			try {
@@ -253,23 +252,25 @@ export class openHABTrigger implements INodeType {
 			this.emit([[item]]);
 		});
 
-		ws.on('error', (error: Error) => {
+		ws.addEventListener('error', (event: Event) => {
 			if (!isClosing) {
-				this.emitError(error);
+				const errEvent = event as unknown as ErrorEvent;
+				this.emitError(new Error(errEvent.message || 'WebSocket error'));
 			}
 		});
 
-		ws.on('close', (code: number, reason: Buffer) => {
+		ws.addEventListener('close', (event: Event) => {
+			const closeEvent = event as unknown as CloseEvent;
 			if (heartbeatTimer) {
 				clearInterval(heartbeatTimer);
 				heartbeatTimer = undefined;
 			}
 			if (!isClosing) {
-				const reasonText = reason.toString() ? `: ${reason.toString()}` : '';
+				const reasonText = closeEvent.reason ? `: ${closeEvent.reason}` : '';
 				this.emitError(
 					new NodeOperationError(
 						this.getNode(),
-						`openHAB event WebSocket closed with code ${code}${reasonText}`,
+						`openHAB event WebSocket closed with code ${closeEvent.code}${reasonText}`,
 					),
 				);
 			}
@@ -282,7 +283,7 @@ export class openHABTrigger implements INodeType {
 					clearInterval(heartbeatTimer);
 					heartbeatTimer = undefined;
 				}
-				if (ws.readyState === SimpleWebSocket.OPEN || ws.readyState === SimpleWebSocket.CONNECTING) {
+				if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
 					ws.close();
 				}
 			},
