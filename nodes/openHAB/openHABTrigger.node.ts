@@ -105,7 +105,7 @@ async function buildWebSocketConfig(
 export class openHABTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'openHAB Trigger',
-		name: 'openHabTrigger',
+		name: 'openHABTrigger',
 		icon: 'file:openhab.svg',
 		group: ['trigger'],
 		version: 1,
