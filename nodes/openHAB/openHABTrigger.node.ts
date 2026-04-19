@@ -255,7 +255,7 @@ export class openHABTrigger implements INodeType {
 		ws.addEventListener('error', (event: Event) => {
 			if (!isClosing) {
 				const errEvent = event as unknown as ErrorEvent;
-				this.emitError(new Error(errEvent.message || 'WebSocket error'));
+				this.emitError(new Error(errEvent.message || `WebSocket error (url: ${wsUrl}, readyState: ${ws.readyState})`));
 			}
 		});
 
